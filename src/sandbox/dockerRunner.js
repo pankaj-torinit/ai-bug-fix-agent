@@ -1,4 +1,6 @@
 const Docker = require('dockerode');
+const { spawn } = require('node:child_process');
+const path = require('node:path');
 
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
 
@@ -15,6 +17,55 @@ const NANO_CPUS = 500_000_000;
 const SANDBOX_NETWORK_MODE = process.env.SANDBOX_NETWORK_MODE || 'bridge';
 
 /**
+ * Run tests directly in the worker process (no Docker).
+ * This is used as a fallback when Docker is not available.
+ *
+ * @param {string} repoPath
+ * @returns {Promise<{ success: boolean, logs: string, failedTests: number }>}
+ */
+async function runTestsLocally(repoPath) {
+  console.log('[Sandbox] Falling back to local test run (no Docker)');
+
+  const detected = detectNodeProjectRoot(repoPath);
+  const projectRel = detected?.projectRelPath || '';
+  const workDir = projectRel ? path.join(repoPath, projectRel) : repoPath;
+
+  return new Promise((resolve) => {
+    const child = spawn(
+      'sh',
+      ['-c', 'NODE_ENV=development npm install --no-audit --no-fund && npm test'],
+      {
+        cwd: workDir,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      }
+    );
+
+    let logs = '';
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      logs += text;
+      process.stdout.write(text);
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      logs += text;
+      process.stderr.write(text);
+    });
+
+    child.on('close', (code) => {
+      const success = code === 0;
+      console.log('[Sandbox] Local test run finished (exit code %d)', code);
+      const failedTests = parseFailedTestCount(logs);
+      console.log('[Sandbox] Failed tests detected (local): %d', failedTests);
+      resolve({ success, logs, failedTests });
+    });
+  });
+}
+
+/**
  * Run tests in a Docker safety sandbox with resource and network restrictions.
  * Creates a container, runs npm install && npm test, captures exit code, then destroys the container.
  *
@@ -28,20 +79,29 @@ async function runTestsInSandbox(repoPath) {
   const projectRel = detected?.projectRelPath || '';
   const workDir = projectRel ? `/workspace/${projectRel}` : '/workspace';
 
-  const container = await docker.createContainer({
-    Image: 'node:20',
-    Tty: false,
-    AttachStdout: true,
-    AttachStderr: true,
-    HostConfig: {
-      Binds: [`${repoPath}:/workspace`],
-      Memory: MEMORY_LIMIT_BYTES,
-      NanoCpus: NANO_CPUS,
-      NetworkMode: SANDBOX_NETWORK_MODE
-    },
-    WorkingDir: workDir,
-    Cmd: ['sh', '-c', 'NODE_ENV=development npm install --no-audit --no-fund && npm test']
-  });
+  let container;
+  try {
+    container = await docker.createContainer({
+      Image: 'node:20',
+      Tty: false,
+      AttachStdout: true,
+      AttachStderr: true,
+      HostConfig: {
+        Binds: [`${repoPath}:/workspace`],
+        Memory: MEMORY_LIMIT_BYTES,
+        NanoCpus: NANO_CPUS,
+        NetworkMode: SANDBOX_NETWORK_MODE
+      },
+      WorkingDir: workDir,
+      Cmd: ['sh', '-c', 'NODE_ENV=development npm install --no-audit --no-fund && npm test']
+    });
+  } catch (err) {
+    console.warn(
+      '[Sandbox] Failed to create Docker container (%s). Falling back to local test run.',
+      err.message
+    );
+    return runTestsLocally(repoPath);
+  }
 
   let logs = '';
   try {
