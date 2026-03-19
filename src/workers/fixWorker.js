@@ -45,7 +45,7 @@ async function processBug(job) {
   await repoService.createFixBranch(git, config.githubProdBranch, branchName);
 
   console.log('[Worker] Building code context');
-  const context = buildContext(repoPath, file, line);
+  const context = buildContext(repoPath, file, line, stacktrace);
 
   let reproductionVerified = false;
   let baselineFailedTests = 0;
@@ -73,16 +73,17 @@ async function processBug(job) {
   let analysis;
   let generatedDiff;
   let patchApplied = false;
-  let lastRejectReason = '';
-  let lastApplyError = '';
+  let lastFeedback = '';
+  let lastTargetFile = '';
 
   for (let attempt = 1; attempt <= maxPatchRetries + 1; attempt += 1) {
     console.log('[Worker] Generating fix (attempt %d)', attempt);
-    const previousAttemptError = attempt > 1 ? (lastApplyError || lastRejectReason || undefined) : undefined;
+    const previousAttemptError = attempt > 1 ? lastFeedback : undefined;
     analysis = await bugAnalyzer.analyzeBugWithContext({
       error: message,
       stacktrace,
       context,
+      repoPath,
       previousAttemptError
     });
 
@@ -93,11 +94,13 @@ async function processBug(job) {
 
     // Apply the fixed file content and get back the generated diff
     try {
-      console.log('[Worker] Applying fixed file and generating diff');
+      console.log('[Worker] Applying fixed file and generating diff (target: %s)', targetFile);
       generatedDiff = patchService.applyFixedFile(repoPath, targetFile, fixedFileContent);
     } catch (err) {
-      lastApplyError = err.message || String(err);
-      console.error('[Worker] Failed to apply fix on attempt %d: %s', attempt, lastApplyError);
+      const applyError = err.message || String(err);
+      lastFeedback = `[Targeted file: ${targetFile}] ${applyError}`;
+      lastTargetFile = targetFile;
+      console.error('[Worker] Failed to apply fix on attempt %d: %s', attempt, applyError);
       if (attempt <= maxPatchRetries) {
         console.log('[Worker] Regenerating fix (retry %d of %d)', attempt, maxPatchRetries);
       }
@@ -113,10 +116,10 @@ async function processBug(job) {
     });
 
     if (!review.approved) {
-      lastRejectReason = review.reason;
-      console.log('[Worker] Patch reviewer: REJECTED — %s', lastRejectReason);
+      lastFeedback = `[Targeted file: ${targetFile}] Reviewer rejected: ${review.reason}`;
+      lastTargetFile = targetFile;
+      console.log('[Worker] Patch reviewer: REJECTED — %s', review.reason);
       // Revert the file so the next attempt starts clean
-      const fs = require('node:fs');
       const { spawnSync } = require('node:child_process');
       spawnSync('git', ['checkout', '--', targetFile], { cwd: repoPath });
       if (attempt <= maxPatchRetries) {
@@ -132,8 +135,7 @@ async function processBug(job) {
   }
 
   if (!patchApplied) {
-    const reason = lastApplyError || lastRejectReason || 'Unknown reason';
-    throw new Error('Fix could not be applied after ' + (maxPatchRetries + 1) + ' attempt(s). Last reason: ' + reason);
+    throw new Error('Fix could not be applied after ' + (maxPatchRetries + 1) + ' attempt(s). Last feedback: ' + (lastFeedback || 'Unknown reason'));
   }
 
   console.log('[Worker] Running post-fix tests');
