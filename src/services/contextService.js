@@ -4,10 +4,10 @@ const { readCodeSnippet } = require('../utils/fileSnippet');
 const { resolveRepoFilePath } = require('../utils/nodeProjectResolver');
 
 /** Maximum number of related files to include in context. */
-const MAX_RELATED_FILES = 5;
+const MAX_RELATED_FILES = 8;
 
 /** Maximum total context size in characters (mainSnippet + related file contents). */
-const MAX_CONTEXT_CHARS = 20_000;
+const MAX_CONTEXT_CHARS = 30_000;
 
 /**
  * @typedef {Object} RelatedFile
@@ -113,15 +113,16 @@ function resolveImportPath(repoPath, fromFile, specifier) {
 }
 
 /**
- * Build structured code context for LLM: main file snippet + up to 5 related files.
- * Total context is capped at MAX_CONTEXT_CHARS.
+ * Build structured code context for LLM: main file snippet + related files from
+ * the stacktrace call chain and import graph.
  *
  * @param {string} repoPath - Absolute path to cloned repository root
  * @param {string} mainFile - Repo-relative path of the file from the stacktrace
  * @param {number} line - 1-based line number of the error
+ * @param {string[]} [stacktraceLines] - Parsed stacktrace lines (e.g. "file:line")
  * @returns {CodeContext}
  */
-function buildContext(repoPath, mainFile, line) {
+function buildContext(repoPath, mainFile, line, stacktraceLines) {
   const resolvedMainFile = resolveRepoFilePath(repoPath, mainFile);
   const mainAbsPath = path.join(repoPath, resolvedMainFile);
   if (!fs.existsSync(mainAbsPath)) {
@@ -151,21 +152,103 @@ function buildContext(repoPath, mainFile, line) {
   const seen = new Set([resolvedMainFile]);
   let relatedChars = 0;
 
-  for (const spec of importSpecifiers) {
-    if (relatedFiles.length >= MAX_RELATED_FILES) break;
-    const resolved = resolveImportPath(repoPath, resolvedMainFile, spec);
-    if (!resolved || seen.has(resolved)) continue;
-    seen.add(resolved);
-
+  /**
+   * Helper to add a related file to the context budget (if within limits).
+   *
+   * @param {string} fromPath - repo-relative path of the importing file (for seen-set purposes)
+   * @param {string} spec - import specifier string
+   * @returns {boolean} true if a file was added, false otherwise
+   */
+  function addRelatedFromImport(fromPath, spec) {
+    if (relatedFiles.length >= MAX_RELATED_FILES) return false;
+    const resolved = resolveImportPath(repoPath, fromPath, spec);
+    if (!resolved || seen.has(resolved)) return false;
     const absPath = path.join(repoPath, resolved);
+    if (!fs.existsSync(absPath)) return false;
+
     let code = fs.readFileSync(absPath, 'utf8');
     const budget = MAX_CONTEXT_CHARS - mainSnippet.length - relatedChars;
-    if (budget <= 0) break;
+    if (budget <= 0) return false;
     if (code.length > budget) {
       code = code.slice(0, budget) + '\n// ... truncated for context limit';
     }
+
+    seen.add(resolved);
     relatedChars += code.length;
     relatedFiles.push({ path: resolved, code });
+    return true;
+  }
+
+  /**
+   * Add a file by its repo-relative path (resolved via nodeProjectResolver).
+   * Used for stacktrace files that aren't necessarily import-reachable.
+   */
+  function addRelatedByPath(filePath) {
+    if (relatedFiles.length >= MAX_RELATED_FILES) return false;
+    const resolved = resolveRepoFilePath(repoPath, filePath);
+    if (seen.has(resolved)) return false;
+    const absPath = path.join(repoPath, resolved);
+    if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) return false;
+
+    let code = fs.readFileSync(absPath, 'utf8');
+    const budget = MAX_CONTEXT_CHARS - mainSnippet.length - relatedChars;
+    if (budget <= 0) return false;
+    if (code.length > budget) {
+      code = code.slice(0, budget) + '\n// ... truncated for context limit';
+    }
+
+    seen.add(resolved);
+    relatedChars += code.length;
+    relatedFiles.push({ path: resolved, code });
+    return true;
+  }
+
+  // Priority 1: files from the stacktrace call chain.
+  // These are the most relevant — they show the actual execution path that caused the error.
+  if (stacktraceLines && stacktraceLines.length > 0) {
+    console.log('[ContextService] Stacktrace lines (%d):', stacktraceLines.length);
+    for (const stLine of stacktraceLines) {
+      if (relatedFiles.length >= MAX_RELATED_FILES) break;
+      const fileRe = /^(.+?):\d+/;
+      const fileMatch = fileRe.exec(stLine);
+      if (fileMatch) {
+        const filePath = fileMatch[1];
+        const resolved = resolveRepoFilePath(repoPath, filePath);
+        const alreadySeen = seen.has(resolved);
+        console.log('[ContextService]   "%s" → resolved "%s" %s', filePath, resolved, alreadySeen ? '(already seen, skipping)' : '');
+        if (!alreadySeen) {
+          addRelatedByPath(filePath);
+        }
+      } else {
+        console.log('[ContextService]   "%s" → no file:line match', stLine);
+      }
+    }
+    console.log('[ContextService] Added %d file(s) from stacktrace', relatedFiles.length);
+  }
+
+  // Priority 2: imports from the main file.
+  for (const spec of importSpecifiers) {
+    if (relatedFiles.length >= MAX_RELATED_FILES) break;
+    addRelatedFromImport(resolvedMainFile, spec);
+  }
+
+  // Second layer: imports from already-added related files (one hop deeper).
+  // This helps pull in service modules that are imported indirectly.
+  if (relatedFiles.length < MAX_RELATED_FILES) {
+    const snapshot = [...relatedFiles];
+    for (const related of snapshot) {
+      if (relatedFiles.length >= MAX_RELATED_FILES) break;
+      try {
+        const relatedContent = related.code;
+        const specs = extractImports(relatedContent);
+        for (const spec of specs) {
+          if (relatedFiles.length >= MAX_RELATED_FILES) break;
+          addRelatedFromImport(related.path, spec);
+        }
+      } catch {
+        // Best-effort only; ignore parse/FS issues for related files.
+      }
+    }
   }
 
   const mainBudget = MAX_CONTEXT_CHARS - relatedChars;
