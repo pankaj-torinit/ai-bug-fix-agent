@@ -1,0 +1,6 @@
+{
+  "watch": ["*.js", "src", "queue.js", "config.js"],
+  "ignore": ["requests", "requests/*"],
+  "ext": "js,json",
+  "exec": "node index.js"
+}
