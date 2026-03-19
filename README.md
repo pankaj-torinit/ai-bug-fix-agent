@@ -34,7 +34,8 @@ Application code lives under **`src/`**: `src/agents/`, `src/services/`, `src/ut
 - **Docker safety sandbox (`src/sandbox/dockerRunner.js`)**
   - Uses **Dockerode** to start `node:20` containers.
   - Mounts the cloned repo at `/workspace` and runs `npm install && npm test`; captures exit code and destroys the container after the run.
-  - **Security restrictions**: memory limit **512 MB**, CPU limit (0.5 CPU), **network disabled** (`NetworkMode: 'none'`).
+  - **Safety restrictions**: memory limit **512 MB**, CPU limit (0.5 CPU).
+  - **Networking**: defaults to allowing network access (so `npm install` can fetch dependencies). You can disable networking by setting `SANDBOX_NETWORK_MODE=none`.
   - Logs: `Starting sandbox`, `Running tests`, `Sandbox finished`.
 
 - **Code context (`src/services/contextService.js`)**
@@ -85,6 +86,14 @@ Required variables:
 - **`GITHUB_PROD_BRANCH`**: Name of the production branch (e.g. `prod`, `main`).
 - **`TEMP_REPO_PATH`**: Absolute path where the agent clones the repo (e.g. `/tmp/ai-agent-repo`).
 - **`REDIS_URL`**: Redis connection string, e.g. `redis://127.0.0.1:6379`.
+
+Optional variables:
+
+- **`SENTRY_CLIENT_SECRET`**: If set, the webhook verifies `sentry-hook-signature` using an HMAC SHA-256 digest of the request body. If not set, signature verification is skipped.
+- **`SENTRY_ALLOWED_PROJECTS`**: Optional comma-separated allowlist of Sentry project slugs. (Currently present as a ready-to-enable filter in code.)
+- **`NGROK_AUTHTOKEN`**: If set, the API starts an ngrok tunnel on startup and prints a public webhook URL to paste into Sentry.
+- **`DOCKER_SOCKET`**: Path to Docker socket (defaults to `/var/run/docker.sock`).
+- **`SANDBOX_NETWORK_MODE`**: Docker network mode for the sandbox (defaults to `bridge`). Set to `none` to disable networking.
 
 Ensure Docker is installed and the user running this process can access the Docker socket (usually `/var/run/docker.sock`).
 
@@ -217,9 +226,10 @@ Before generating a fix, the agent tries to add a **Jest test that reproduces th
 2. **Saving**: The test is written to **`tests/ai_generated_bug.test.js`** in the cloned repo (the `tests/` directory is created if needed).
 3. **Verification**: The test suite is run in the Docker sandbox. The agent **requires the new test to fail** (i.e. the test reproduces the bug). If the test fails, reproduction is confirmed and the test is kept.
 4. **Retry**: If the generated test does **not** fail (e.g. wrong code path or assertion), the file is **discarded** (`removeTest`), and the agent **retries once**: generate a new test, save, and run again. If the second attempt also does not fail, the agent proceeds without a reproduction test (no test file is committed).
-5. **After the fix**: Once the patch is applied, tests are run again. The reproduction test (if present) should **pass**, confirming the fix.
+5. **After the fix**: Once the patch is applied, tests are run again. The agent also compares the number of Jest failures before vs. after the fix and will fail the job if the fix introduces *more* failing tests than the baseline.
+6. **Before committing**: The worker **removes** `tests/ai_generated_bug.test.js` before committing/pushing. This keeps PRs focused on the fix; the reproduction test is currently used only as an internal verification step.
 
-This ensures that when a test is included in the PR, it actually failed before the fix and passes after it, improving confidence in the patch.
+This flow improves confidence in the patch by verifying a reproduction (when possible) and preventing the fix from increasing the number of failing tests.
 
 ---
 
