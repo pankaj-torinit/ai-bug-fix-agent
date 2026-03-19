@@ -95,7 +95,7 @@ Optional variables:
 - **`DOCKER_SOCKET`**: Path to Docker socket (defaults to `/var/run/docker.sock`).
 - **`SANDBOX_NETWORK_MODE`**: Docker network mode for the sandbox (defaults to `bridge`). Set to `none` to disable networking.
 
-Ensure Docker is installed and the user running this process can access the Docker socket (usually `/var/run/docker.sock`).
+If Docker is available, the agent will run tests inside a Docker sandbox for isolation. If Docker is **not** available (e.g. Docker is not installed or the daemon/socket is unreachable), the worker will **fall back to running tests directly in the worker process** (`npm install && npm test` in the cloned repo). This fallback is less isolated, so production deployments should prefer the Docker path.
 
 ---
 
@@ -192,7 +192,7 @@ The worker process will then:
 3. **Create** a branch named `ai-fix/sentry-1234567890abcdef`.
 4. **Build context**: read the main file snippet (20 lines around line 42), parse its imports, resolve in-repo paths, and load up to 5 related files (total context ≤ 20k chars).
 5. **Generate a Jest test** that reproduces the bug; save to `tests/ai_generated_bug.test.js`; run tests. The system requires the new test to **fail** (reproducing the bug). If it does not fail, the test is discarded and generation is retried once.
-6. **Generate patch** with the LLM, then **review patch**: the AI reviewer approves or rejects (correctness, regressions, standards, security). If rejected, regenerate patch (max 2 retries).
+    6. **Generate patch** with the LLM, then **review patch**: the AI reviewer approves or rejects (correctness, regressions, standards, security). If rejected, regenerate patch (max 5 retries).
 7. **Apply** the approved patch with guardrails and run tests in Docker (the reproduction test should now pass).
 8. **Commit & push** the fix branch.
 9. **Create a PR** with title `AI Fix: TypeError: Cannot read properties of undefined`.
@@ -247,7 +247,7 @@ The reviewer returns `{ approved: boolean, reason: string }`. The worker logs th
 - `Patch reviewer: APPROVED — <reason>`
 - `Patch reviewer: REJECTED — <reason>`
 
-If the patch is **rejected**, the worker regenerates a new patch (up to **2 retries**, 3 attempts in total). If still not approved after that, the job fails.
+If the patch is **rejected**, the worker regenerates a new patch (up to **5 retries**, 6 attempts in total). If still not approved after that, the job fails.
 
 ---
 

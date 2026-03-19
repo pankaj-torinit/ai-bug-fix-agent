@@ -69,7 +69,7 @@ async function processBug(job) {
     console.log('[Worker] Could not generate a failing reproduction test after %d attempt(s); proceeding without it', maxAttempts);
   }
 
-  const maxPatchRetries = 2;
+  const maxPatchRetries = 5;
   let analysis;
   let generatedDiff;
   let patchApplied = false;
