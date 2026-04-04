@@ -31,7 +31,8 @@ async function cloneRepo(repoUrl) {
   const repoPath = prepareTempRepoPath();
   /** @type {SimpleGit} */
   const git = simpleGit();
-  console.log('[RepoService] Cloning repo', repoUrl, 'into', repoPath);
+  const repoLabel = config.githubRepo || '(unknown repo)';
+  console.log('[RepoService] Cloning', repoLabel, 'into', repoPath);
   await git.clone(repoUrl, repoPath);
   const repoGit = simpleGit(repoPath);
   return { git: repoGit, repoPath };
