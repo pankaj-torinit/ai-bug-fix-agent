@@ -97,7 +97,13 @@ function detectNodeProjectRoot(repoPath, maxDepth = DEFAULT_MAX_DEPTH) {
   // If all are equal, prefer repo root if present.
   const best = scored[0];
   const rootPkg = scored.find((c) => c.relDir === '');
-  if (rootPkg && scored.every((c) => c.score === best.score)) return rootPkg;
+  if (rootPkg && scored.every((c) => c.score === best.score)) {
+    return {
+      projectRelPath: rootPkg.relDir,
+      projectAbsPath: rootPkg.absDir,
+      packageJsonPath: rootPkg.pkgPath
+    };
+  }
   return { projectRelPath: best.relDir, projectAbsPath: best.absDir, packageJsonPath: best.pkgPath };
 }
 
