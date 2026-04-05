@@ -318,7 +318,7 @@ function applyPatch(repoPath, rawPatch) {
       fs.writeFileSync(debugPath, patch, 'utf8');
       const patchLines = patch.split('\n');
       console.error('[PatchService] Debug patch saved:', debugPath, `(lines=${patchLines.length})`);
-      console.error('[PatchService] Patch contents:\n' + patchLines.join('\n'));
+      // Do not print patch to logs — may contain proprietary source or secrets.
     } catch (_) {
       // Non-fatal
     }
