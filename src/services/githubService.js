@@ -59,7 +59,10 @@ async function commitChanges(git, message) {
     // File was not staged — nothing to unstage
   }
 
-  console.log('[GithubService] Committing with message:', message);
+  console.log(
+    '[GithubService] Committing with message:',
+    message.length > 120 ? `${message.slice(0, 120)}… (${message.length} chars)` : message
+  );
   await git.commit(message);
 }
 
@@ -99,7 +102,8 @@ async function createPullRequest(payload) {
 
   if (!res.ok) {
     const text = await res.text();
-    console.error('[GithubService] Failed to create PR:', res.status, text);
+    const safeBody = text.length > 500 ? `${text.slice(0, 500)}… (${text.length} chars)` : text;
+    console.error('[GithubService] Failed to create PR:', res.status, safeBody);
     throw new Error(`Failed to create PR: ${res.status}`);
   }
 

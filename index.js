@@ -9,6 +9,10 @@ const path = require('path');
 const config = require('./config');
 const { bugFixQueue } = require('./queue');
 const { parseStacktrace } = require('./src/utils/stacktraceParser');
+const {
+  sanitizeUntrustedPlainText,
+  sanitizeUntrustedStacktrace
+} = require('./src/utils/sanitizeUntrustedForPrompt');
 const crypto = require('crypto');
 const ngrok = require('@ngrok/ngrok');
 const app = express();
@@ -22,7 +26,8 @@ app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
   const cyan = '\x1b[36m';
   const reset = '\x1b[0m';
-  console.log(`${cyan}[Request] ${timestamp} ${req.method} ${req.originalUrl}${reset}`);
+  // Log path only (no query string — may contain tokens in ?params)
+  console.log(`${cyan}[Request] ${timestamp} ${req.method} ${req.path}${reset}`);
 
   res.on('finish', () => {
     const durationMs = Date.now() - start;
@@ -39,7 +44,7 @@ app.use((req, res, next) => {
     }
 
     console.log(
-      `${color}[Request Completed] ${timestamp} ${req.method} ${req.originalUrl} - ${status} in ${durationMs}ms${reset}`
+      `${color}[Request Completed] ${timestamp} ${req.method} ${req.path} - ${status} in ${durationMs}ms${reset}`
     );
   });
 
@@ -178,10 +183,13 @@ app.post('/sentry-webhook', async (req, res) => {
     contextLines = [];
   }
 
+  const safeMessage = sanitizeUntrustedPlainText(message);
+  const safeStacktrace = sanitizeUntrustedStacktrace(stacktrace);
+
   const jobData = {
     eventId,
-    message,
-    stacktrace,
+    message: safeMessage,
+    stacktrace: safeStacktrace,
     file,
     line,
     contextLines,
