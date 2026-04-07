@@ -1,5 +1,5 @@
 const config = require('../../config');
-const { bugFixQueue, connection } = require('../../queue');
+const { connection } = require('../../queue');
 const { Worker } = require('bullmq');
 const repoService = require('../services/repoService');
 const githubService = require('../services/githubService');
