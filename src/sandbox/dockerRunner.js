@@ -5,6 +5,7 @@ const path = require('node:path');
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
 
 const { detectNodeProjectRoot } = require('../utils/nodeProjectResolver');
+const { buildUntrustedRepoTestEnv } = require('../utils/safeTestEnv');
 
 /** Memory limit: 512 MB. */
 const MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
@@ -36,7 +37,8 @@ async function runTestsLocally(repoPath) {
       ['-c', 'NODE_ENV=development npm install --no-audit --no-fund && npm test'],
       {
         cwd: workDir,
-        env: process.env,
+        // Do not pass process.env: npm lifecycle scripts must not see agent secrets.
+        env: buildUntrustedRepoTestEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
       }
     );
