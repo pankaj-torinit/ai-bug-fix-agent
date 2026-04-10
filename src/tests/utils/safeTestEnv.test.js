@@ -5,7 +5,7 @@ describe('buildUntrustedRepoTestEnv', () => {
     const host = {
       PATH: '/usr/bin',
       HOME: '/home/u',
-      OPENAI_API_KEY: 'sk-secret',
+      LLM_API_KEY: 'sk-secret',
       GITHUB_TOKEN: 'ghp_secret',
       REDIS_URL: 'redis://:pass@host:6379',
       GITHUB_REPO: 'o/r',
@@ -17,7 +17,7 @@ describe('buildUntrustedRepoTestEnv', () => {
     const out = buildUntrustedRepoTestEnv(host);
     expect(out.PATH).toBe('/usr/bin');
     expect(out.HOME).toBe('/home/u');
-    expect(out.OPENAI_API_KEY).toBeUndefined();
+    expect(out.LLM_API_KEY).toBeUndefined();
     expect(out.GITHUB_TOKEN).toBeUndefined();
     expect(out.REDIS_URL).toBeUndefined();
     expect(out.GITHUB_REPO).toBeUndefined();

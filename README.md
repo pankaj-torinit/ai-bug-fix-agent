@@ -80,7 +80,7 @@ cp .env.example .env
 Required variables:
 
 - **`PORT`**: API server port (default `3000`).
-- **`OPENAI_API_KEY`**: OpenAI API key used by the LLM service.
+- **`LLM_API_KEY`**: OpenAI API key used by the LLM service.
 - **`GITHUB_TOKEN`**: GitHub personal access token with `repo`/PR permissions.
 - **`GITHUB_REPO`**: Target repo in `owner/repo` format, e.g. `my-org/my-service`.
 - **`GITHUB_PROD_BRANCH`**: Name of the production branch (e.g. `prod`, `main`).
