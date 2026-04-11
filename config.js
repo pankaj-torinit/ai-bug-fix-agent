@@ -18,6 +18,21 @@ function parseTimeoutMs(name, defaultMs) {
 }
 
 /**
+ * @param {string} name
+ * @param {number} defaultVal
+ * @param {boolean} [zeroDisables] - if true, 0 means disabled
+ * @returns {number}
+ */
+function parsePositiveIntEnv(name, defaultVal, zeroDisables = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return defaultVal;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return defaultVal;
+  if (zeroDisables && n === 0) return 0;
+  return n;
+}
+
+/**
  * @typedef {Object} Config
  * @property {number} port
  * @property {string} openaiApiKey
@@ -30,6 +45,10 @@ function parseTimeoutMs(name, defaultMs) {
  * @property {number} llmRequestTimeoutMs
  * @property {number} sandboxDockerTimeoutMs
  * @property {number} sandboxLocalTimeoutMs
+ * @property {number} webhookRateLimitWindowMs
+ * @property {number} webhookRateLimitMax
+ * @property {number} sentryEventDedupTtlSec
+ * @property {number} webhookGlobalMaxPerMinute
  */
 
 /** @type {Config} */
@@ -48,7 +67,15 @@ const config = {
   /** Wall-clock cap for Docker npm install + test */
   sandboxDockerTimeoutMs: parseTimeoutMs('SANDBOX_DOCKER_TIMEOUT_MS', 900000),
   /** Wall-clock cap for local fallback npm install + test */
-  sandboxLocalTimeoutMs: parseTimeoutMs('SANDBOX_LOCAL_TIMEOUT_MS', 900000)
+  sandboxLocalTimeoutMs: parseTimeoutMs('SANDBOX_LOCAL_TIMEOUT_MS', 900000),
+  /** Per-IP rate limit window for POST /sentry-webhook (W9) */
+  webhookRateLimitWindowMs: parseTimeoutMs('WEBHOOK_RATE_LIMIT_WINDOW_MS', 900000),
+  /** Max webhook POSTs per IP per window; 0 = disable */
+  webhookRateLimitMax: parsePositiveIntEnv('WEBHOOK_RATE_LIMIT_MAX', 100, true),
+  /** Redis NX TTL so the same Sentry event_id is not queued twice */
+  sentryEventDedupTtlSec: parsePositiveIntEnv('SENTRY_EVENT_DEDUP_TTL_SEC', 604800),
+  /** Max webhooks accepted globally per clock minute; 0 = disable */
+  webhookGlobalMaxPerMinute: parsePositiveIntEnv('WEBHOOK_GLOBAL_MAX_PER_MINUTE', 120, true)
 };
 
 module.exports = config;
