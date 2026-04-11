@@ -7,6 +7,12 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
+const {
+  claimSentryEventDedup,
+  releaseSentryEventDedup,
+  consumeGlobalWebhookBudget
+} = require('./src/services/webhookDedup');
 const { bugFixQueue } = require('./queue');
 const { parseStacktrace } = require('./src/utils/stacktraceParser');
 const {
@@ -16,6 +22,24 @@ const {
 const crypto = require('crypto');
 const ngrok = require('@ngrok/ngrok');
 const app = express();
+
+if (process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
+
+/** W9: per-IP cap on webhook POSTs (0 = disabled). */
+const webhookRateLimiter =
+  config.webhookRateLimitMax <= 0
+    ? (_req, _res, next) => next()
+    : rateLimit({
+        windowMs: config.webhookRateLimitWindowMs,
+        max: config.webhookRateLimitMax,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: { error: 'Too many requests', reason: 'webhook_rate_limited' },
+        keyGenerator: (req) =>
+          ipKeyGenerator(req.ip ?? req.socket?.remoteAddress ?? 'unknown')
+      });
 
 const SENTRY_CLIENT_SECRET = process.env.SENTRY_CLIENT_SECRET;
 
@@ -144,8 +168,34 @@ function validateSentryPayload(req) {
   return { valid: true, event };
 }
 
-app.post('/sentry-webhook', async (req, res) => {
+app.post('/sentry-webhook', webhookRateLimiter, async (req, res) => {
   console.log('[Webhook] Received Sentry Error');
+
+  const validation = validateSentryPayload(req);
+  if (!validation.valid) {
+    console.error('[Webhook] Invalid payload:', validation.reason);
+    return res.status(400).json({ error: 'Invalid payload', reason: validation.reason });
+  }
+
+  const event = validation.event;
+  const eventId = event.event_id;
+
+  const claimed = await claimSentryEventDedup(eventId, config.sentryEventDedupTtlSec);
+  if (!claimed) {
+    console.log('[Webhook] Duplicate event (dedup), skipping enqueue:', eventId);
+    return res.status(202).json({
+      status: 'duplicate',
+      eventId,
+      message: 'Event already accepted recently'
+    });
+  }
+
+  const budgetOk = await consumeGlobalWebhookBudget();
+  if (!budgetOk) {
+    await releaseSentryEventDedup(eventId);
+    console.warn('[Webhook] Global per-minute webhook budget exceeded');
+    return res.status(429).json({ error: 'Too many webhook events', reason: 'global_budget' });
+  }
 
   // Persist raw webhook payload for debugging/audit
   try {
@@ -162,15 +212,7 @@ app.post('/sentry-webhook', async (req, res) => {
     console.error('[Webhook] Failed to persist raw payload', err);
   }
 
-  const validation = validateSentryPayload(req);
-  if (!validation.valid) {
-    console.error('[Webhook] Invalid payload:', validation.reason);
-    return res.status(400).json({ error: 'Invalid payload', reason: validation.reason });
-  }
-
   const payload = req.body;
-  const event = validation.event;
-  const eventId = event.event_id;
   const issueTitle = payload.data?.issue?.title;
   const exception = event.exception?.values?.[0];
   const message =
@@ -210,9 +252,13 @@ app.post('/sentry-webhook', async (req, res) => {
     rawPayload: payload
   };
 
+  // BullMQ forbids ':' in custom jobId (reserved for internal keys).
+  const bullJobId = `sentry-${String(eventId).replace(/:/g, '-')}`;
+
   try {
     console.log('[Webhook] Enqueuing job for event', eventId);
     await bugFixQueue.add('processBug', jobData, {
+      jobId: bullJobId,
       attempts: 1,
       removeOnComplete: true,
       removeOnFail: false
@@ -220,6 +266,12 @@ app.post('/sentry-webhook', async (req, res) => {
     console.log('[Webhook] Job queued for event', eventId);
     res.status(202).json({ status: 'queued', eventId });
   } catch (err) {
+    const msg = err?.message || '';
+    if (/already exists|duplicate job id|already been added/i.test(msg)) {
+      console.log('[Webhook] Job id already in queue:', eventId);
+      return res.status(202).json({ status: 'already_queued', eventId });
+    }
+    await releaseSentryEventDedup(eventId);
     console.error('[Webhook] Failed to queue job', err);
     res.status(500).json({ error: 'Failed to queue job' });
   }
