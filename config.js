@@ -40,7 +40,7 @@ function parsePositiveIntEnv(name, defaultVal, zeroDisables = false) {
  * @property {string} githubToken
  * @property {string} githubRepo
  * @property {string} githubProdBranch
- * @property {string} tempRepoPath
+ * @property {string} tempRepoPath - Parent directory; each job uses a unique subfolder (W10)
  * @property {string} redisUrl
  * @property {number} llmRequestTimeoutMs
  * @property {number} sandboxDockerTimeoutMs

@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const simpleGit = require('simple-git');
 const config = require('../../config');
 
@@ -8,13 +9,32 @@ const config = require('../../config');
  */
 
 /**
- * Ensure the temp repo directory exists and is empty.
- * @returns {string} Absolute path to temp repo dir.
+ * @param {string|number} id
+ * @returns {string}
  */
-function prepareTempRepoPath() {
-  const repoPath = config.tempRepoPath;
+function sanitizeWorkspaceSegment(id) {
+  const s = String(id)
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return s.slice(0, 96) || 'job';
+}
+
+/**
+ * Create an empty per-job workspace under {@link config.tempRepoPath} (W10 — safe for concurrent workers).
+ *
+ * @param {string} workspaceId - e.g. `${job.id}-${eventId}`
+ * @returns {string} Absolute path to the new empty directory (clone target)
+ */
+function prepareJobWorkspacePath(workspaceId) {
+  if (!workspaceId || typeof workspaceId !== 'string') {
+    throw new TypeError('workspaceId is required for isolated clone directory');
+  }
+  const base = config.tempRepoPath;
+  fs.mkdirSync(base, { recursive: true });
+  const unique = `${sanitizeWorkspaceSegment(workspaceId)}-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const repoPath = path.join(base, unique);
   if (fs.existsSync(repoPath)) {
-    // Simple but effective cleanup for temp dir
     fs.rmSync(repoPath, { recursive: true, force: true });
   }
   fs.mkdirSync(repoPath, { recursive: true });
@@ -22,13 +42,14 @@ function prepareTempRepoPath() {
 }
 
 /**
- * Clone the target repository.
+ * Clone the target repository into a job-specific directory.
  *
  * @param {string} repoUrl
+ * @param {string} workspaceId - Unique per BullMQ job (e.g. `${job.id}-${eventId}`)
  * @returns {Promise<{ git: SimpleGit, repoPath: string }>}
  */
-async function cloneRepo(repoUrl) {
-  const repoPath = prepareTempRepoPath();
+async function cloneRepo(repoUrl, workspaceId) {
+  const repoPath = prepareJobWorkspacePath(workspaceId);
   /** @type {SimpleGit} */
   const git = simpleGit();
   const repoLabel = config.githubRepo || '(unknown repo)';
