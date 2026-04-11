@@ -18,7 +18,16 @@ const ngrok = require('@ngrok/ngrok');
 const app = express();
 
 const SENTRY_CLIENT_SECRET = process.env.SENTRY_CLIENT_SECRET;
-app.use(bodyParser.json({ limit: '1mb' }));
+
+app.use(
+  bodyParser.json({
+    limit: '1mb',
+    /** Capture raw bytes for Sentry HMAC (W8 — must match wire body, not JSON.stringify). */
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    }
+  })
+);
 
 // Log every incoming request with trigger time and duration
 app.use((req, res, next) => {
@@ -67,6 +76,31 @@ function validateSentryPayload(req) {
     return { valid: false, reason: 'Empty payload' };
   }
 
+  if (SENTRY_CLIENT_SECRET) {
+    const signature = req.headers['sentry-hook-signature'];
+    if (!signature || typeof signature !== 'string') {
+      return { valid: false, reason: 'Missing sentry-hook-signature header' };
+    }
+    const raw = req.rawBody;
+    if (!Buffer.isBuffer(raw)) {
+      return { valid: false, reason: 'Missing raw body for signature verification' };
+    }
+    const hmac = crypto.createHmac('sha256', SENTRY_CLIENT_SECRET);
+    hmac.update(raw);
+    const digestHex = hmac.digest('hex');
+    let digestBuf;
+    let sigBuf;
+    try {
+      digestBuf = Buffer.from(digestHex, 'hex');
+      sigBuf = Buffer.from(String(signature).trim(), 'hex');
+    } catch {
+      return { valid: false, reason: 'Invalid signature format' };
+    }
+    if (digestBuf.length !== sigBuf.length || !crypto.timingSafeEqual(digestBuf, sigBuf)) {
+      return { valid: false, reason: 'Invalid signature' };
+    }
+  }
+
   // Optional: restrict to allowed projects
   // const projectSlug = payload.data?.issue?.project?.slug || payload.issue?.project?.slug;
   // const allowedProjects = (process.env.SENTRY_ALLOWED_PROJECTS || '').split(',').filter(Boolean);
@@ -99,33 +133,12 @@ function validateSentryPayload(req) {
 
   // Sentry's event payloads can be complex; we only require a minimal set.
   const eventId = event.event_id;
-  const issueTitle = payload.data?.issue?.title;
   const exception = event.exception?.values?.[0];
-  const message =
-    event.message?.formatted ||
-    event.logentry?.formatted ||
-    event.message ||
-    exception?.value ||
-    issueTitle ||
-    'Sentry event';
   const stacktrace = (exception?.stacktrace?.frames) || event.stacktrace || [];
 
   if (!eventId) return { valid: false, reason: 'Missing event_id' };
   if (!stacktrace || !Array.isArray(stacktrace) || stacktrace.length === 0) {
     return { valid: false, reason: 'Missing stacktrace' };
-  }
-
-  // Optional: verify Sentry signature if secret is configured
-  if (SENTRY_CLIENT_SECRET) {
-    const signature = req.headers['sentry-hook-signature'];
-    const body = JSON.stringify(payload);
-    const hmac = crypto.createHmac('sha256', SENTRY_CLIENT_SECRET);
-    hmac.update(body, 'utf8');
-    const digest = hmac.digest('hex');
-
-    if (digest !== signature) {
-      return { valid: false, reason: 'Invalid signature' };
-    }
   }
 
   return { valid: true, event };
@@ -142,7 +155,8 @@ app.post('/sentry-webhook', async (req, res) => {
     }
     const filename = `sentry-${Date.now()}.json`;
     const filePath = path.join(requestsDir, filename);
-    fs.writeFileSync(filePath, JSON.stringify(req.body, null, 2), 'utf8');
+    const auditBytes = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(JSON.stringify(req.body), 'utf8');
+    fs.writeFileSync(filePath, auditBytes);
     console.log(`[Webhook] Saved raw payload to ${filePath}`);
   } catch (err) {
     console.error('[Webhook] Failed to persist raw payload', err);
