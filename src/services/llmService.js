@@ -33,9 +33,15 @@ function getClient() {
     }
     client = new OpenAI({
       apiKey: config.openaiApiKey,
-      baseURL
+      baseURL,
+      timeout: config.llmRequestTimeoutMs
     });
-    console.log('[LLMService] Generator model: %s via %s', modelName, baseURL);
+    console.log(
+      '[LLMService] Generator model: %s via %s (request timeout %dms)',
+      modelName,
+      baseURL,
+      config.llmRequestTimeoutMs
+    );
   }
   return client;
 }
@@ -52,9 +58,15 @@ function getReviewClient() {
     }
     reviewClient = new OpenAI({
       apiKey,
-      baseURL: reviewBaseURL
+      baseURL: reviewBaseURL,
+      timeout: config.llmRequestTimeoutMs
     });
-    console.log('[LLMService] Reviewer model: %s via %s', reviewModelName, reviewBaseURL);
+    console.log(
+      '[LLMService] Reviewer model: %s via %s (request timeout %dms)',
+      reviewModelName,
+      reviewBaseURL,
+      config.llmRequestTimeoutMs
+    );
   }
   return reviewClient;
 }
