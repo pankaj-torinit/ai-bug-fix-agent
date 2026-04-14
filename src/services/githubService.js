@@ -1,3 +1,4 @@
+const path = require('node:path');
 const nodeFetch = require('node-fetch');
 const fetch = typeof nodeFetch === 'function' ? nodeFetch : nodeFetch.default;
 const config = require('../../config');
@@ -42,22 +43,40 @@ function getCloneUrl(repo) {
 }
 
 /**
- * Commit local changes. This is done via simple-git in worker, but
- * GithubService provides a convenience helper for commit messages.
+ * Reject path traversal and absolute paths for paths passed to `git add`.
+ * @param {string[]} paths
+ */
+function assertSafeRepoRelativePaths(paths) {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    throw new Error('commitChanges requires a non-empty array of repo-relative file paths');
+  }
+  for (const p of paths) {
+    if (typeof p !== 'string' || !p.trim() || p.includes('\0')) {
+      throw new Error('Invalid staged path');
+    }
+    if (path.isAbsolute(p)) {
+      throw new Error('Staged path must be repo-relative');
+    }
+    const norm = path.posix.normalize(p.replace(/\\/g, '/'));
+    if (norm.startsWith('../') || norm === '..' || norm.split('/').includes('..')) {
+      throw new Error('Unsafe staged path');
+    }
+  }
+}
+
+/**
+ * Commit local changes. Stages only the given repo-relative paths (never `git add .`),
+ * so debug artifacts and other unintended files are not included in the fix commit.
  *
  * @param {import('simple-git').SimpleGit} git
  * @param {string} message
+ * @param {string[]} paths - Repo-relative paths to stage (e.g. the file the fix touched).
  */
-async function commitChanges(git, message) {
-  console.log('[GithubService] Staging all changes');
-  await git.add('.');
+async function commitChanges(git, message, paths) {
+  assertSafeRepoRelativePaths(paths);
 
-  try {
-    await git.raw(['reset', 'HEAD', '--', '**/ai_generated_bug.test.js']);
-    console.log('[GithubService] Excluded ai_generated_bug.test.js from commit');
-  } catch {
-    // File was not staged — nothing to unstage
-  }
+  console.log('[GithubService] Staging files:', paths.join(', '));
+  await git.add(paths);
 
   console.log(
     '[GithubService] Committing with message:',
