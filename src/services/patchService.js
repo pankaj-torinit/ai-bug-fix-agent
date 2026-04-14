@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { detectNodeProjectRoot } = require('../utils/nodeProjectResolver');
@@ -227,8 +228,6 @@ function validatePatch(patch) {
  * @returns {string}
  */
 function resolveToRepoRelative(filePath, repoPath) {
-  const fs = require('node:fs');
-
   // Fast path: already repo-relative
   if (fs.existsSync(path.join(repoPath, filePath))) return filePath;
 
@@ -256,7 +255,6 @@ function resolveToRepoRelative(filePath, repoPath) {
  * @returns {string}
  */
 function fixDiffPaths(patch, repoPath) {
-  const fs = require('node:fs');
   const lines = patch.split('\n');
   const detected = detectNodeProjectRoot(repoPath);
   const prefix = detected?.projectRelPath;
@@ -313,7 +311,6 @@ function applyPatch(repoPath, rawPatch) {
 
   if (result.status !== 0) {
     try {
-      const fs = require('node:fs');
       const debugPath = '/tmp/ai-agent-last-patch.diff';
       fs.writeFileSync(debugPath, patch, 'utf8');
       const patchLines = patch.split('\n');
@@ -337,7 +334,6 @@ function applyPatch(repoPath, rawPatch) {
  * @returns {string} The generated unified diff (for review/logging)
  */
 function applyFixedFile(repoPath, targetFile, fixedContent) {
-  const fs = require('node:fs');
   const absPath = path.join(repoPath, targetFile);
 
   if (!fs.existsSync(absPath)) {

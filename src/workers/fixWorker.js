@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { spawnSync } = require('node:child_process');
 const config = require('../../config');
 const { connection } = require('../../queue');
 const { Worker } = require('bullmq');
@@ -128,7 +129,6 @@ async function processBug(job) {
         lastTargetFile = targetFile;
         console.log('[Worker] Patch reviewer: REJECTED — %s', review.reason);
         // Revert the file so the next attempt starts clean
-        const { spawnSync } = require('node:child_process');
         spawnSync('git', ['checkout', '--', targetFile], { cwd: repoPath });
         if (attempt <= maxPatchRetries) {
           console.log('[Worker] Regenerating fix (retry %d of %d)', attempt, maxPatchRetries);
