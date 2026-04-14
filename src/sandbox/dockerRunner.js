@@ -1,3 +1,4 @@
+const fs = require('node:fs');
 const Docker = require('dockerode');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -17,6 +18,83 @@ const NANO_CPUS = 500_000_000;
 // Default to allowing network so `npm install` can fetch dependencies.
 // You can explicitly disable it by setting SANDBOX_NETWORK_MODE=none.
 const SANDBOX_NETWORK_MODE = process.env.SANDBOX_NETWORK_MODE || 'bridge';
+
+/**
+ * Writable tmpfs for `node_modules` only (read-only repo bind, W12). Avoid tmpfs for other paths
+ * under `/workspace`: runc often cannot create mount points on a read-only bind mount.
+ *
+ * @param {string} projectRel - Repo-relative project dir, or '' for repo root.
+ * @returns {Record<string, string>} Docker HostConfig.Tmpfs map
+ */
+function buildSandboxTmpfs(projectRel) {
+  const rel = projectRel ? projectRel.replace(/\\/g, '/') : '';
+  const base = '/workspace';
+  const nodeModulesOpts = 'rw,nosuid,nodev,size=512m';
+
+  // Only tmpfs `node_modules` here. Extra tmpfs under `/workspace` (e.g. `.nyc_output`) breaks on
+  // many runc/Docker setups: the runtime mkdirs mount points on the RO bind mount and fails with
+  // EROFS even when the host pre-created those dirs. Coverage/nyc output can live under
+  // `node_modules` via env in the shell command if needed.
+  const out = {
+    [`${base}/node_modules`]: nodeModulesOpts
+  };
+  if (rel) {
+    out[`${base}/${rel}/node_modules`] = nodeModulesOpts;
+  }
+  return out;
+}
+
+/**
+ * Docker needs an existing directory to attach tmpfs over the bind mount; create empty
+ * `node_modules` dirs on the host clone before `createContainer`.
+ *
+ * @param {string} repoPath - Absolute path to the cloned repo root.
+ * @param {string} projectRel - Repo-relative project dir, or ''.
+ */
+function ensureSandboxTmpfsMountPoints(repoPath, projectRel) {
+  const rel = projectRel ? projectRel.replace(/\\/g, '/') : '';
+  const dirs = [path.join(repoPath, 'node_modules')];
+  if (rel) {
+    dirs.push(path.join(repoPath, rel, 'node_modules'));
+  }
+  for (const d of dirs) {
+    fs.mkdirSync(d, { recursive: true });
+  }
+}
+
+/** @param {string} s */
+function shellSingleQuote(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Install deps + run tests without writing to the read-only bind mount (lockfile lives on RO FS).
+ * Uses `npm ci` when a matching package-lock.json is present; otherwise `npm install --no-package-lock`.
+ *
+ * @param {string} repoPath
+ * @param {string} projectRel - Repo-relative project dir, or '' for repo root.
+ * @returns {string} Shell snippet for `sh -c`.
+ */
+function buildSandboxShellCommand(repoPath, projectRel) {
+  const rel = projectRel ? projectRel.replace(/\\/g, '/') : '';
+  const rootLock = fs.existsSync(path.join(repoPath, 'package-lock.json'));
+  const nestedLock = Boolean(rel && fs.existsSync(path.join(repoPath, projectRel, 'package-lock.json')));
+  const env = 'NODE_ENV=development';
+
+  if (rootLock && !rel) {
+    return `${env} npm ci --no-audit --no-fund && npm test`;
+  }
+  if (rootLock && rel) {
+    return `${env} cd /workspace && npm ci --no-audit --no-fund && npm test --prefix ${shellSingleQuote(rel)}`;
+  }
+  if (nestedLock && rel) {
+    return `${env} cd ${shellSingleQuote(`/workspace/${rel}`)} && npm ci --no-audit --no-fund && npm test`;
+  }
+  if (!rel) {
+    return `${env} npm install --no-audit --no-fund --no-package-lock && npm test`;
+  }
+  return `${env} cd ${shellSingleQuote(`/workspace/${rel}`)} && npm install --no-audit --no-fund --no-package-lock && npm test`;
+}
 
 /**
  * @template T
@@ -122,7 +200,8 @@ async function runTestsInSandbox(repoPath) {
 
   const detected = detectNodeProjectRoot(repoPath);
   const projectRel = detected?.projectRelPath || '';
-  const workDir = projectRel ? `/workspace/${projectRel}` : '/workspace';
+  const shellCmd = buildSandboxShellCommand(repoPath, projectRel);
+  ensureSandboxTmpfsMountPoints(repoPath, projectRel);
 
   let container;
   try {
@@ -132,13 +211,16 @@ async function runTestsInSandbox(repoPath) {
       AttachStdout: true,
       AttachStderr: true,
       HostConfig: {
-        Binds: [`${repoPath}:/workspace`],
+        // Read-only: lifecycle scripts cannot mutate application source; `node_modules` uses tmpfs
+        // (see buildSandboxTmpfs — do not add tmpfs under /workspace except node_modules; runc + RO bind fails).
+        Binds: [`${repoPath}:/workspace:ro`],
+        Tmpfs: buildSandboxTmpfs(projectRel),
         Memory: MEMORY_LIMIT_BYTES,
         NanoCpus: NANO_CPUS,
         NetworkMode: SANDBOX_NETWORK_MODE
       },
-      WorkingDir: workDir,
-      Cmd: ['sh', '-c', 'NODE_ENV=development npm install --no-audit --no-fund && npm test']
+      WorkingDir: '/workspace',
+      Cmd: ['sh', '-c', shellCmd]
     });
   } catch (err) {
     console.warn(
