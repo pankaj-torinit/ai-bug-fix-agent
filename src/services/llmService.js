@@ -1,5 +1,8 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const OpenAI = require('openai');
 const config = require('../../config');
+const { resolveRepoFilePath } = require('../utils/nodeProjectResolver');
 const {
   sanitizeUntrustedPlainText,
   sanitizeUntrustedStacktrace,
@@ -270,10 +273,6 @@ async function analyzeBug(params) {
   if (hasRootCauseRedirect && !fixedFileContent?.trim()) {
     console.log('[LLMService] LLM requested root cause file "%s" without providing fixedFileContent — phase 2 will load it', parsed.rootCauseFile || parsed.root_cause_file);
   }
-
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const { resolveRepoFilePath } = require('../utils/nodeProjectResolver');
 
   const llmTargetFile =
     parsed.targetFile ??
