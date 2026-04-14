@@ -168,7 +168,7 @@ async function processBug(job) {
 
     const commitMessage = `AI Fix: ${message}`.slice(0, 72);
     console.log('[Worker] Committing changes');
-    await githubService.commitChanges(git, commitMessage);
+    await githubService.commitChanges(git, commitMessage, [analysis.targetFile]);
 
     console.log('[Worker] Pushing branch');
     await githubService.pushBranch(git, branchName);
